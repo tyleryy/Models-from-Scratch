@@ -5,3 +5,5 @@
 
 **/*.err
 **/*.out
+
+**/predicted_flows
