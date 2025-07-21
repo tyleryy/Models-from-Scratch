@@ -17,6 +17,11 @@ import torch
 output_dir = "predicted_flows"
 os.makedirs(output_dir, exist_ok=True)
 
+# ! I think that I "random crop" to 384, 512 getting a "zoomed in" image as train input
+# ! But in inference, I "resize" to 384, 512 which is the whole image
+# ! might be a mismatch between training and inference images resulting in noisy output
+input_height, input_width = 384, 512
+
 # Model loading (as before)
 # model = FlowNetCorrelation()
 model = FlowNetSimple()
@@ -28,27 +33,39 @@ model = model.cuda()
 
 # Dataset and DataLoader (as before)
 img_transform = T.Compose([
-    T.Resize((384, 512)),
+    T.Resize((input_height, input_width)),
     T.ToTensor(),
     T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
-def sintel_transform(img1, img2, flow, valid_flow_mask=None):
+
+
+def sintel_transform_test(img1, img2, flow=None, valid_flow_mask=None):
     img1 = img_transform(img1)
     img2 = img_transform(img2)
-    if flow is not None:
-        flow = torch.from_numpy(flow).float()
     return img1, img2, flow, valid_flow_mask
 
 dataset = Sintel(
     root='/pub/tyleryy/Models-from-Scratch/data',
-    split='train',
+    split='test',
     pass_name='clean',
-    transforms=sintel_transform
+    transforms=sintel_transform_test
 )
-dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-# Inference and save color images
-for idx, (img1, img2, flow_gt) in enumerate(dataloader):
+def sintel_test_collate(batch):
+    # Handles both (img1, img2, flow) and (img1, img2, flow, valid_flow_mask)
+    if len(batch[0]) == 4:
+        img1s, img2s, flows, valid_flow_masks = zip(*batch)
+    elif len(batch[0]) == 3:
+        img1s, img2s, flows = zip(*batch)
+    else:
+        raise ValueError("Unexpected number of elements in batch")
+    img1s = torch.stack(img1s)
+    img2s = torch.stack(img2s)
+    return img1s, img2s
+
+dataloader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=sintel_test_collate)
+
+for idx, (img1, img2) in enumerate(dataloader):
 
     # FlowNetCorr
     # img1 = img1.cuda()
@@ -64,17 +81,12 @@ for idx, (img1, img2, flow_gt) in enumerate(dataloader):
 
         pred_flow = model(img) # FlowNetS
 
-        if pred_flow.shape[-2:] != flow_gt.shape[-2:]:
-            pred_flow = torch.nn.functional.interpolate(
-                pred_flow, size=flow_gt.shape[-2:], mode='bilinear', align_corners=False
-            )
         pred_flow = pred_flow.cpu() # (2, H, W)
         color_img = flow_to_image(pred_flow)    # (H, W, 3), uint8
         # print(color_img.shape)
 
         # Save as image
         out_path = os.path.join(output_dir, f"flow_{idx:05d}.png")
-        # print(color_img[0].permute(1,2,0).shape)
-        # print(color_img.dtype)
+
         cv2.imwrite(out_path, color_img[0].permute(1,2,0).numpy())
         print(f"Saved {out_path}")
